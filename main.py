@@ -4,7 +4,7 @@ import matplotlib.animation as animation
 import numpy as np
 import random
 
-# ---------------- WORLD GENERATION ----------------
+# ---------------- WORLD ----------------
 
 def WorldGen(size_x, size_y, seed_id):
 
@@ -24,36 +24,25 @@ def WorldGen(size_x, size_y, seed_id):
 
             if noise_val < 0:
                 color_map[i, j] = (0, 0, 1)  # water
-
             elif noise_val < 0.15:
                 color_map[i, j] = (1, 1, 0)  # sand
-
             elif noise_val < 0.5:
                 color_map[i, j] = (0, 1, 0)  # grass
-
             elif noise_val < 0.7:
                 color_map[i, j] = (0.5, 0.3, 0.1)  # mountain
-
             else:
                 color_map[i, j] = (1, 1, 1)  # snow
 
     return color_map, height_map
 
+
 # ---------------- FOOD ----------------
 
 class Food:
+    def __init__(self, x, y):
+        self.pos_x = x
+        self.pos_y = y
 
-    def __init__(self, height_map):
-
-        while True:
-
-            x = random.randint(0, len(height_map) - 1)
-            y = random.randint(0, len(height_map[0]) - 1)
-
-            if height_map[x, y] > 0:
-                self.pos_x = x
-                self.pos_y = y
-                break
 
 # ---------------- ANT ----------------
 
@@ -64,7 +53,6 @@ class Ant:
         self.height_matrix = height_matrix
 
         while True:
-
             x = random.randint(0, len(height_matrix) - 1)
             y = random.randint(0, len(height_matrix[0]) - 1)
 
@@ -73,55 +61,65 @@ class Ant:
                 self.pos_y = y
                 break
 
-    def move(self):
+    def move(self, foods, dead_food):
 
-        # možné smery
-        directions = [
-            (-1, 0),
-            (1, 0),
-            (0, -1),
-            (0, 1)
-        ]
-
+        directions = [(-1,0),(1,0),(0,-1),(0,1)]
         dx, dy = random.choice(directions)
 
         new_x = self.pos_x + dx
         new_y = self.pos_y + dy
 
-        # kontrola hraníc mapy
+        # pohyb
         if (
             0 <= new_x < len(self.height_matrix)
-            and
-            0 <= new_y < len(self.height_matrix[0])
+            and 0 <= new_y < len(self.height_matrix[0])
+            and self.height_matrix[new_x, new_y] > 0
         ):
+            self.pos_x = new_x
+            self.pos_y = new_y
 
-            # nesmie ísť do vody
-            if self.height_matrix[new_x, new_y] > 0:
-                self.pos_x = new_x
-                self.pos_y = new_y
+        # ---------------- EAT FOOD ----------------
+        for i, food in enumerate(foods):
+
+            if food.pos_x == self.pos_x and food.pos_y == self.pos_y:
+
+                foods.pop(i)
+                dead_food.append(50)   # cooldown
+                break
+
 
 # ---------------- MAIN ----------------
 
-color_matrix, height_matrix = WorldGen(100, 100, 50)
+color_matrix, height_matrix = WorldGen(50, 50, 50)
 
 foods = []
+dead_food = []
 
-for _ in range(10):
-    foods.append(Food(height_matrix))
+# initial food
+for _ in range(100):
+
+    while True:
+        x = random.randint(0, len(height_matrix)-1)
+        y = random.randint(0, len(height_matrix[0])-1)
+
+        if height_matrix[x, y] > 0:
+            foods.append(Food(x, y))
+            break
 
 ant = Ant(height_matrix)
 
 # ---------------- PLOT ----------------
 
 fig, ax = plt.subplots()
-
 ax.imshow(color_matrix)
 
-# vykreslenie jedla
-for food in foods:
-    ax.scatter(food.pos_y, food.pos_x, c='red', s=10)
+food_scatter = ax.scatter(
+    [f.pos_y for f in foods],
+    [f.pos_x for f in foods],
+    c='red',
+    s=10
+)
 
-# mravec
 ant_plot = ax.scatter(
     ant.pos_y,
     ant.pos_x,
@@ -132,22 +130,50 @@ ant_plot = ax.scatter(
 
 ax.axis('off')
 
-# ---------------- ANIMATION ----------------
+
+# ---------------- UPDATE ----------------
 
 def update(frame):
 
-    ant.move()
+    ant.move(foods, dead_food)
 
-    # update pozície mravca
-    ant_plot.set_offsets([ant.pos_y, ant.pos_x])
+    # ---------------- RESPAWN SYSTEM ----------------
+    new_dead = []
 
-    return ant_plot,
+    for t in dead_food:
+        t -= 1
+
+        if t <= 0:
+
+            # spawn nové jedlo
+            while True:
+                x = random.randint(0, len(height_matrix)-1)
+                y = random.randint(0, len(height_matrix[0])-1)
+
+                if height_matrix[x, y] > 0:
+                    foods.append(Food(x, y))
+                    break
+        else:
+            new_dead.append(t)
+
+    dead_food[:] = new_dead
+
+    # ---------------- RENDER ----------------
+    ant_plot.set_offsets([[ant.pos_y, ant.pos_x]])
+
+    food_scatter.set_offsets([
+        [f.pos_y, f.pos_x] for f in foods
+    ])
+
+    return ant_plot, food_scatter
+
 
 ani = animation.FuncAnimation(
     fig,
     update,
-    interval=20,   # 200 ms = 0.2 s
-    blit=False
+    interval=200,
+    blit=False,
+    cache_frame_data=False
 )
 
 plt.show()
