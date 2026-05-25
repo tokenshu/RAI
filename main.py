@@ -28,8 +28,8 @@ def WorldGen(size_x, size_y, seed_id):
 class Ant:
 
     def __init__(self, height_matrix):
-        self.pos_x = random.randint(len(0,height_matrix))
-        self.pos_y = random.randint(len(0,height_matrix[0]))
+        self.pos_x = random.randint(0,len(height_matrix))
+        self.pos_y = random.randint(0,len(height_matrix[0]))
 
 
         
@@ -37,6 +37,6 @@ class Ant:
 
 print(Ant(height_matrix))
 
-#plt.imshow(color_matrix)
-#plt.axis('off')
-#plt.show()
+plt.imshow(color_matrix)
+plt.axis('off')
+plt.show()
