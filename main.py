@@ -78,7 +78,6 @@ class Ant:
         self.nest_pos = nest_pos
 
         self.carrying_food = False
-        self.food_collected = 0
         self.height_matrix = height_matrix
         
         # Nájdenie štartu v mravenisku
@@ -126,11 +125,10 @@ class Ant:
 
                 self.carrying_food = False
 
-                self.food_collected += 1
-
                 self.current_path = []
 
-            return
+                return "DELIVERED"
+            return None
         # 1. Ak mravec nemá plán, kam urobiť ďalší krok, nájde si najbližší nepreskúmaný cieľ
         if not self.current_path:
             if not self.discovered:
@@ -261,6 +259,8 @@ for dx in [-1, 0, 1]:
 foods = []
 dead_food = []
 
+food_collected = 0
+spawn_threshold = 10
 # initial food
 for _ in range(100):
 
@@ -272,7 +272,7 @@ for _ in range(100):
             foods.append(Food(x, y))
             break
 
-ant = Ant(height_matrix, nest_pos)
+ants = [Ant(height_matrix, nest_pos)]
 
 # ---------------- PLOT ----------------
 
@@ -296,13 +296,7 @@ food_scatter = ax.scatter(
     s=10
 )
 
-ant_plot = ax.scatter(
-    ant.pos_y,
-    ant.pos_x,
-    c='orange',
-    s=30,
-    marker='s'
-)
+ant_plot = ax.scatter([], [], s=30, marker='s')
 
 ax.axis('off')
 
@@ -311,7 +305,23 @@ ax.axis('off')
 
 def update(frame):
 
-    ant.move(foods)
+    global food_collected
+    global spawn_threshold
+
+    for ant in ants:
+
+        result = ant.move(foods)
+
+        if result == "DELIVERED":
+
+            food_collected += 1
+
+            # spawn nového mravca každých 10 jedál
+            if food_collected >= spawn_threshold:
+
+                ants.append(Ant(height_matrix, nest_pos))
+
+                spawn_threshold += 10
 
     # ---------------- RESPAWN SYSTEM ----------------
     new_dead = []
@@ -335,18 +345,26 @@ def update(frame):
     dead_food[:] = new_dead
 
     # ---------------- RENDER ----------------
-    ant_plot.set_offsets([[ant.pos_y, ant.pos_x]])
+    positions = []
+    colors = []
 
-    if ant.carrying_food:
-        ant_plot.set_color('magenta')
-    else:
-        ant_plot.set_color('orange')
+    for ant in ants:
+
+        positions.append([ant.pos_y, ant.pos_x])
+
+        if ant.carrying_food:
+            colors.append('magenta')
+        else:
+            colors.append('orange')
+
+    ant_plot.set_offsets(positions)
+    ant_plot.set_color(colors)
 
     food_scatter.set_offsets([
         [f.pos_y, f.pos_x] for f in foods
     ])
 
-    counter_text.set_text(str(ant.food_collected))
+    counter_text.set_text(str(food_collected))
 
     return ant_plot, food_scatter
 
