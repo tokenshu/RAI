@@ -4,6 +4,7 @@ import matplotlib.animation as animation
 import numpy as np
 import random
 from collections import deque
+import heapq  # POTŘEBNÉ PRO PRIORITNÍ FRONTU V A*
 
 # ---------------- WORLD ----------------
 
@@ -101,7 +102,7 @@ def HandleCombat(ants, foods):
     # 2. Krok: Vyhodnotenie bojov
     for pos, ants_at_pos in position_map.items():
         if len(ants_at_pos) > 1:
-            
+
             first_colony = ants_at_pos[0].colony_type
             has_enemy = any(ant.colony_type != first_colony for ant in ants_at_pos)
 
@@ -136,21 +137,13 @@ def HandleCombat(ants, foods):
             
             # Nastavíme HP na hlboké mínus, aby sme ho v ďalšom frame (ak by náhodou prežil filter) nezalogovali znova
             ant.hp = -999
-    # 3. Krok: Sprava padlych mravcov (Drop jedla)
-    for ant in ants:
-        if ant.hp <= 0 and ant.carrying_food:
-            # Bezpecny text bez emoji a diakritiky
-            print(f"PADOL! Mravec {ant.colony_type}#{ant.ant_id} padol v boji a pustil jedlo na [{ant.pos_x}, {ant.pos_y}]")
-            foods.append(Food(ant.pos_x, ant.pos_y))
-            ant.carrying_food = False  # Osetrenie, aby nepushol jedlo viackrat
+
 # ---------------- ANT ----------------
 
 class Food:
     def __init__(self, x, y):
         self.pos_x = x
         self.pos_y = y
-
-# ---------------- ANT ----------------
 
 class Ant:
     def __init__(self, height_matrix, nest_pos, colony_type):
@@ -181,9 +174,9 @@ class Ant:
         if self.colony_type == "BFS":
             self.strategy = BfsStrategy()
         elif self.colony_type == "DFS":
-            self.strategy = BfsStrategy() #zmeniť na DFS po jej pridaní
+            self.strategy = BfsStrategy() # zmeniť na DFS po jej pridaní
         elif self.colony_type == "ASTAR":
-            self.strategy = BfsStrategy() #zmeniť na Astar po jej pridaní
+            self.strategy = AStarStrategy() # ZMENENÉ NA ASTARSTRATEGY
 
     def _discover_neighbors(self, x, y):
         directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
@@ -337,14 +330,88 @@ class DfsStrategy(PathfindingStrategy):
 
 
 class AStarStrategy(PathfindingStrategy):
-    """MIESTO PRE KAMARATA 2 (A*)"""
+    """MIESTO PRE KAMARATA 2 (A*) - ZABUDOVANÉ"""
+    def _heuristic(self, p1, p2):
+        # Manhattanova vzdialenost (vzdialenost v mriezke bez diagonal)
+        return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
+
     def find_path_to_unvisited(self, ant):
-        # TODO: Sem napisat cisty A* algoritmus pre prieskum.
-        # Kedze je to A*, mozes vyuzit aj funkciu ant.terrain_weight(x, y) pre vahy hran
+        start = (ant.pos_x, ant.pos_y)
+        
+        # Prvky vo fronte: (f_score, g_score, aktualna_pozicia)
+        # Na zaciatku prieskumu nie je jeden fixny ciel, heuristika je 0 (Dijkstra)
+        queue = [(0, 0, start)]
+        heapq.heapify(queue)
+        
+        parent = {}
+        g_score = {start: 0}
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+        
+        while queue:
+            _, current_g, curr = heapq.heappop(queue)
+            
+            # Nasli sme najblizsi a najlacnejsi nepreskumany bod
+            if curr in ant.discovered:
+                path = []
+                while curr != start:
+                    path.append(curr)
+                    curr = parent[curr]
+                path.reverse()
+                return path
+                
+            for dx, dy in directions:
+                nx, ny = curr[0] + dx, curr[1] + dy
+                neighbor = (nx, ny)
+                
+                # Moze prejst len cez to, co uz pozna alebo prave vidi
+                if neighbor in ant.visited or neighbor in ant.discovered:
+                    weight = ant.terrain_weight(nx, ny)
+                    tentative_g = current_g + weight
+                    
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        parent[neighbor] = curr
+                        f_score = tentative_g  # h=0, kedze ciele sa dynamicky menia
+                        heapq.heappush(queue, (f_score, tentative_g, neighbor))
         return []
 
     def find_path_home(self, ant):
-        # TODO: Sem napisat cisty A* algoritmus pre cestu domov.
+        start = (ant.pos_x, ant.pos_y)
+        goal = ant.nest_pos
+
+        # Prvky vo fronte: (f_score, g_score, aktualna_pozicia)
+        queue = [(self._heuristic(start, goal), 0, start)]
+        heapq.heapify(queue)
+        
+        parent = {}
+        g_score = {start: 0}
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+        while queue:
+            _, current_g, curr = heapq.heappop(queue)
+
+            if curr == goal:
+                path = []
+                while curr != start:
+                    path.append(curr)
+                    curr = parent[curr]
+                path.reverse()
+                return path
+
+            for dx, dy in directions:
+                nx, ny = curr[0] + dx, curr[1] + dy
+                neighbor = (nx, ny)
+
+                # Pri ceste domov chodi striktne po tom, co uz bolo zmapovane
+                if neighbor in ant.visited:
+                    weight = ant.terrain_weight(nx, ny)
+                    tentative_g = current_g + weight
+
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        parent[neighbor] = curr
+                        f_score = tentative_g + self._heuristic(neighbor, goal)
+                        heapq.heappush(queue, (f_score, tentative_g, neighbor))
         return []
 
 # ---------------- MAIN ----------------
@@ -353,13 +420,13 @@ color_matrix, height_matrix = WorldGen(50, 50, random.randint(0,10000))
 
 nests = []
 
-bfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0.5, 0.5))
+bfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.7, 0.42, 0))
 nests.append(bfs_nest)
 
-dfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0.5, 0))
+dfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.0, 0.0, 0.7))
 nests.append(dfs_nest)
 
-astar_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0, 0.5))
+astar_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0, 0.4, 0))
 nests.append(astar_nest)
 
 nest_tiles = set()
@@ -410,14 +477,12 @@ bfs_text = ax.text(
     ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
-
 dfs_text = ax.text(
     dfs_nest[1], dfs_nest[0],
     "0", color='black',
     ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
-
 astar_text = ax.text(
     astar_nest[1], astar_nest[0],
     "0", color='black',
@@ -456,13 +521,14 @@ def update(frame):
                     nest = astar_nest
 
                 ants.append(Ant(height_matrix, nest, colony))
-
+                
                 spawn_threshold[colony] += 10
 
     HandleCombat(ants, foods)           
     for ant in ants:
         if ant.combat_lock > 0:
             ant.combat_lock -= 1
+
     # 4. CRITICAL: Odstránenie mŕtvych mravcov z poľa PRED RENDEROM!
     ants[:] = [ant for ant in ants if ant.hp > 0]
     # Render
@@ -488,7 +554,12 @@ def update(frame):
     ant_plot.set_offsets(positions)
     ant_plot.set_color(colors)
 
-    food_scatter.set_offsets([[f.pos_y, f.pos_x] for f in foods])
+    if foods:
+        food_scatter.set_offsets([[f.pos_y, f.pos_x] for f in foods])
+    else:
+        # Pokud jídlo došlo, předáme prázdné 2D pole, což Matplotlib schválí a tečky zmizí
+        food_scatter.set_offsets(np.empty((0, 2)))
+
     bfs_text.set_text(str(food_collected["BFS"]))
     dfs_text.set_text(str(food_collected["DFS"]))
     astar_text.set_text(str(food_collected["ASTAR"]))
