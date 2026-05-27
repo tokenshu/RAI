@@ -34,7 +34,7 @@ def WorldGen(size_x, size_y, seed_id):
     return color_map, height_map
 
 def GenerateNest(color_map, height_map, existing_nests=[], nest_color=(0.5,0.5,0.5)):
-    
+
     size_x = len(height_map)
     size_y = len(height_map[0])
 
@@ -67,8 +67,8 @@ def GenerateNest(color_map, height_map, existing_nests=[], nest_color=(0.5,0.5,0
         for pos in valid_positions:
 
             min_dist = min(
-                abs(pos[0] - ex_nest[0]) + abs(pos[1] - ex_nest[1])
-                for ex_nest in existing_nests
+                abs(pos[0] - nest[0]) + abs(pos[1] - nest[1])
+                for nest in existing_nests
             )
 
             if min_dist > best_distance:
@@ -472,26 +472,26 @@ ants.append(Ant(height_matrix, astar_nest, "ASTAR"))
 fig, ax = plt.subplots()
 ax.imshow(color_matrix)
 bfs_text = ax.text(
-    bfs_nest[1], bfs_nest[0], 
-    "0", color='black', 
-    ha='center', va='center', 
+    bfs_nest[1], bfs_nest[0],
+    "0", color='black',
+    ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
 dfs_text = ax.text(
-    dfs_nest[1], dfs_nest[0], 
-    "0", color='black', 
-    ha='center', va='center', 
+    dfs_nest[1], dfs_nest[0],
+    "0", color='black',
+    ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
 astar_text = ax.text(
-    astar_nest[1], astar_nest[0], 
-    "0", color='black', 
-    ha='center', va='center', 
+    astar_nest[1], astar_nest[0],
+    "0", color='black',
+    ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
 
 food_scatter = ax.scatter(
-    [f.pos_y for f in foods], [f.pos_x for f in foods], 
+    [f.pos_y for f in foods], [f.pos_x for f in foods],
     c='red', s=10
 )
 
@@ -512,7 +512,7 @@ def update(frame):
             food_collected[colony] += 1
 
             if food_collected[colony] >= spawn_threshold[colony]:
-                
+
                 if colony == "BFS":
                     nest = bfs_nest
                 elif colony == "DFS":
@@ -529,7 +529,7 @@ def update(frame):
         if ant.combat_lock > 0:
             ant.combat_lock -= 1
 
-    # Odstránenie mŕtvych mravcov z poľa PRED RENDEROM!
+    # 4. CRITICAL: Odstránenie mŕtvych mravcov z poľa PRED RENDEROM!
     ants[:] = [ant for ant in ants if ant.hp > 0]
     # Render
     positions = []
@@ -539,8 +539,10 @@ def update(frame):
         positions.append([ant.pos_y, ant.pos_x])
         if ant.colony_type == "BFS":
             base_color = 'orange'
+
         elif ant.colony_type == "DFS":
             base_color = 'blue'
+
         else:
             base_color = 'green'
 
@@ -566,5 +568,6 @@ def update(frame):
 
 ani = animation.FuncAnimation(
     fig, update, interval=10, blit=False, cache_frame_data=False
-    )
+)
+
 plt.show()
