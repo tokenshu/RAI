@@ -32,25 +32,56 @@ def WorldGen(size_x, size_y, seed_id):
 
     return color_map, height_map
 
-def GenerateNest(color_map, height_map):
+def GenerateNest(color_map, height_map, existing_nests=[], nest_color=(0.5,0.5,0.5)):
+
     size_x = len(height_map)
     size_y = len(height_map[0])
 
+    valid_positions = []
+
     for i in range(1, size_x - 1):
         for j in range(1, size_y - 1):
+
             valid = True
+
             for dx in [-1, 0, 1]:
                 for dy in [-1, 0, 1]:
+
                     h = height_map[i + dx, j + dy]
+
                     if not (0.15 <= h < 0.5):
                         valid = False
 
             if valid:
-                for dx in [-1, 0, 1]:
-                    for dy in [-1, 0, 1]:
-                        color_map[i + dx, j + dy] = (0.5, 0.5, 0.5)
-                return (i, j)
-    return None
+                valid_positions.append((i, j))
+
+    # prvé hniezdo náhodne
+    if len(existing_nests) == 0:
+        nest = random.choice(valid_positions)
+
+    else:
+        best_pos = None
+        best_distance = -1
+
+        for pos in valid_positions:
+
+            min_dist = min(
+                abs(pos[0] - nest[0]) + abs(pos[1] - nest[1])
+                for nest in existing_nests
+            )
+
+            if min_dist > best_distance:
+                best_distance = min_dist
+                best_pos = pos
+
+        nest = best_pos
+
+    # vykreslenie hniezda
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+            color_map[nest[0] + dx, nest[1] + dy] = nest_color
+
+    return nest
 
 # ---------------- ANT ----------------
 
@@ -60,8 +91,9 @@ class Food:
         self.pos_y = y
 
 class Ant:
-    def __init__(self, height_matrix, nest_pos):
+    def __init__(self, height_matrix, nest_pos, colony_type):
         self.nest_pos = nest_pos
+        self.colony_type = colony_type
         self.carrying_food = False
         self.height_matrix = height_matrix
         
@@ -221,18 +253,42 @@ class Ant:
 
 # ---------------- MAIN ----------------
 
-color_matrix, height_matrix = WorldGen(40, 40, 50)
-nest_pos = GenerateNest(color_matrix, height_matrix)
+color_matrix, height_matrix = WorldGen(45, 45, 50)
+
+nests = []
+
+bfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0.5, 0.5))
+nests.append(bfs_nest)
+
+dfs_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0.5, 0))
+nests.append(dfs_nest)
+
+astar_nest = GenerateNest(color_matrix, height_matrix, nests, nest_color=(0.5, 0, 0.5))
+nests.append(astar_nest)
 
 nest_tiles = set()
-for dx in [-1, 0, 1]:
-    for dy in [-1, 0, 1]:
-        nest_tiles.add((nest_pos[0] + dx, nest_pos[1] + dy))
+
+for nest in [bfs_nest, dfs_nest, astar_nest]:
+
+    for dx in [-1, 0, 1]:
+        for dy in [-1, 0, 1]:
+
+            nest_tiles.add((nest[0] + dx, nest[1] + dy))
 
 foods = []
 dead_food = []
-food_collected = 0
-spawn_threshold = 10
+
+food_collected = {
+    "BFS": 0,
+    "DFS": 0,
+    "ASTAR": 0
+}
+
+spawn_threshold = {
+    "BFS": 10,
+    "DFS": 10,
+    "ASTAR": 10
+}
 
 for _ in range(100):
     while True:
@@ -242,15 +298,34 @@ for _ in range(100):
             foods.append(Food(x, y))
             break
 
-ants = [Ant(height_matrix, nest_pos)]
+ants = []
+
+ants.append(Ant(height_matrix, bfs_nest, "BFS"))
+ants.append(Ant(height_matrix, dfs_nest, "DFS"))
+ants.append(Ant(height_matrix, astar_nest, "ASTAR"))
 
 # ---------------- PLOT ----------------
 
 fig, ax = plt.subplots()
 ax.imshow(color_matrix)
-counter_text = ax.text(
-    nest_pos[1], nest_pos[0], "0",
-    color='black', ha='center', va='center',
+bfs_text = ax.text(
+    bfs_nest[1], bfs_nest[0],
+    "0", color='black',
+    ha='center', va='center',
+    fontsize=10, fontweight='bold'
+)
+
+dfs_text = ax.text(
+    dfs_nest[1], dfs_nest[0],
+    "0", color='black',
+    ha='center', va='center',
+    fontsize=10, fontweight='bold'
+)
+
+astar_text = ax.text(
+    astar_nest[1], astar_nest[0],
+    "0", color='black',
+    ha='center', va='center',
     fontsize=10, fontweight='bold'
 )
 
@@ -271,10 +346,22 @@ def update(frame):
     for ant in ants:
         result = ant.move(foods)
         if result == "DELIVERED":
-            food_collected += 1
-            if food_collected >= spawn_threshold:
-                ants.append(Ant(height_matrix, nest_pos))
-                spawn_threshold += 10
+
+            colony = ant.colony_type
+            food_collected[colony] += 1
+
+            if food_collected[colony] >= spawn_threshold[colony]:
+
+                if colony == "BFS":
+                    nest = bfs_nest
+                elif colony == "DFS":
+                    nest = dfs_nest
+                else:
+                    nest = astar_nest
+
+                ants.append(Ant(height_matrix, nest, colony))
+
+                spawn_threshold[colony] += 10
 
     # Render
     positions = []
@@ -282,16 +369,27 @@ def update(frame):
 
     for ant in ants:
         positions.append([ant.pos_y, ant.pos_x])
+        if ant.colony_type == "BFS":
+            base_color = 'orange'
+
+        elif ant.colony_type == "DFS":
+            base_color = 'blue'
+
+        else:
+            base_color = 'green'
+
         if ant.carrying_food:
             colors.append('magenta')
         else:
-            colors.append('orange')
+            colors.append(base_color)
 
     ant_plot.set_offsets(positions)
     ant_plot.set_color(colors)
 
     food_scatter.set_offsets([[f.pos_y, f.pos_x] for f in foods])
-    counter_text.set_text(str(food_collected))
+    bfs_text.set_text(str(food_collected["BFS"]))
+    dfs_text.set_text(str(food_collected["DFS"]))
+    astar_text.set_text(str(food_collected["ASTAR"]))
 
     return ant_plot, food_scatter
 
