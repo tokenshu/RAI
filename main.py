@@ -83,28 +83,66 @@ def GenerateNest(color_map, height_map, existing_nests=[], nest_color=(0.5,0.5,0
 
     return nest
 
-def HandleCombat(ants):
-    for i in range(len(ants)):
-        for j in range(i + 1, len(ants)):
-            ant1 = ants[i]
-            ant2 = ants[j]
+def HandleCombat(ants, foods):
+    """
+    Opravený bojový systém. Mravce s HP <= 0 už nemôžu útočiť 
+    a do konzoly sa vypíše smrť každého jedného mravca.
+    """
+    position_map = {}
 
-            # Ak už je jeden z nich mŕtvy, nemôžu bojovať
-            if ant1.hp <= 0 or ant2.hp <= 0:
-                continue
+    # 1. Krok: Zoskupenie žijúcich mravcov podľa ich aktuálnych súradníc
+    for ant in ants:
+        if ant.hp > 0:
+            pos = (ant.pos_x, ant.pos_y)
+            if pos not in position_map:
+                position_map[pos] = []
+            position_map[pos].append(ant)
 
-            if ant1.colony_type != ant2.colony_type:
-                if ant1.combat_lock == 0 and ant2.combat_lock == 0:
-                    if ant1.pos_x == ant2.pos_x and ant1.pos_y == ant2.pos_y:
-                        print(f"FIGHT! {ant1.colony_type}#{ant1.ant_id}(HP:{ant1.hp}) vs {ant2.colony_type}#{ant2.ant_id}(HP:{ant2.hp})")
+    # 2. Krok: Vyhodnotenie bojov
+    for pos, ants_at_pos in position_map.items():
+        if len(ants_at_pos) > 1:
+            
+            first_colony = ants_at_pos[0].colony_type
+            has_enemy = any(ant.colony_type != first_colony for ant in ants_at_pos)
 
-                        ant1.hp -= ant2.attack
-                        ant2.hp -= ant1.attack
+            if has_enemy:
+                for ant in ants_at_pos:
+                    # FIX 1: Ak mravec zomrel počas tohto frame (dostal ranu od niekoho predtým), nemôže útočiť!
+                    if ant.hp <= 0:
+                        continue
+                        
+                    if ant.combat_lock == 0:
+                        # FIX 2: Útočiť sa dá len na nepriateľov, ktorí ešte ŽIJÚ (majú HP > 0)
+                        enemies = [e for e in ants_at_pos if e.colony_type != ant.colony_type and e.hp > 0]
+                        
+                        if enemies:
+                            target = random.choice(enemies)
+                            
+                            print(f"BOJ! {ant.colony_type}#{ant.ant_id}(HP:{ant.hp}) utoci na {target.colony_type}#{target.ant_id}(HP:{target.hp})")
+                            
+                            target.hp -= ant.attack
+                            ant.combat_lock = 15
 
-                        # Zvýš LOCK na viac framov (napr. 15), aby mali čas odísť z políčka
-                        ant1.combat_lock = 15
-                        ant2.combat_lock = 15
-
+    # 3. Krok: Správa padlých mravcov (Zaloguje smrť KAŽDÉHO mravca)
+    for ant in ants:
+        if ant.hp <= 0:
+            if ant.carrying_food:
+                print(f"PADOL! Mravec {ant.colony_type}#{ant.ant_id} padol v boji a pustil jedlo na [{ant.pos_x}, {ant.pos_y}]")
+                foods.append(Food(ant.pos_x, ant.pos_y))
+                ant.carrying_food = False  # Ošetrenie proti duplicitnému dropu
+            else:
+                # FIX 3: Výpis aj pre mravca, ktorý jedlo neniesol
+                print(f"PADOL! Mravec {ant.colony_type}#{ant.ant_id} zomrel v boji na [{ant.pos_x}, {ant.pos_y}]")
+            
+            # Nastavíme HP na hlboké mínus, aby sme ho v ďalšom frame (ak by náhodou prežil filter) nezalogovali znova
+            ant.hp = -999
+    # 3. Krok: Sprava padlych mravcov (Drop jedla)
+    for ant in ants:
+        if ant.hp <= 0 and ant.carrying_food:
+            # Bezpecny text bez emoji a diakritiky
+            print(f"PADOL! Mravec {ant.colony_type}#{ant.ant_id} padol v boji a pustil jedlo na [{ant.pos_x}, {ant.pos_y}]")
+            foods.append(Food(ant.pos_x, ant.pos_y))
+            ant.carrying_food = False  # Osetrenie, aby nepushol jedlo viackrat
 # ---------------- ANT ----------------
 
 class Food:
@@ -393,10 +431,11 @@ def update(frame):
 
                 spawn_threshold[colony] += 10
 
-    HandleCombat(ants)           
+    HandleCombat(ants, foods)           
     for ant in ants:
         if ant.combat_lock > 0:
             ant.combat_lock -= 1
+    # 4. CRITICAL: Odstránenie mŕtvych mravcov z poľa PRED RENDEROM!
     ants[:] = [ant for ant in ants if ant.hp > 0]
     # Render
     positions = []
