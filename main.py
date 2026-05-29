@@ -6,6 +6,9 @@ import random
 from collections import deque
 import heapq  # POTŘEBNÉ PRO PRIORITNÍ FRONTU V A*
 
+MAP_SIZE = 55
+FOOD_QUANTITY = 150
+
 # ---------------- WORLD ----------------
 
 def WorldGen(size_x, size_y, seed_id):
@@ -122,11 +125,15 @@ def HandleCombat(ants, foods):
                             print(f"BOJ! {ant.colony_type}#{ant.ant_id}(HP:{ant.hp}) utoci na {target.colony_type}#{target.ant_id}(HP:{target.hp})")
                             
                             target.hp -= ant.attack
+                            if target.hp <= 0:
+                                stats[ant.colony_type]["kills"] += 1
+
                             ant.combat_lock = 15
 
     # 3. Krok: Správa padlých mravcov (Zaloguje smrť KAŽDÉHO mravca)
     for ant in ants:
         if ant.hp <= 0:
+            stats[ant.colony_type]["deaths"] += 1
             if ant.carrying_food:
                 print(f"PADOL! Mravec {ant.colony_type}#{ant.ant_id} padol v boji a pustil jedlo na [{ant.pos_x}, {ant.pos_y}]")
                 foods.append(Food(ant.pos_x, ant.pos_y))
@@ -163,6 +170,9 @@ class Ant:
         self.visited.add((self.pos_x, self.pos_y))
         self.discovered = set()
         self._discover_neighbors(self.pos_x, self.pos_y)
+
+        self.food_pickup_time = None
+        self.total_path_cost = 0
         
         for dx in [-1, 0, 1]:
             for dy in [-1, 0, 1]:
@@ -189,6 +199,7 @@ class Ant:
                 and (nx, ny) not in self.visited
             ):
                 self.discovered.add((nx, ny))
+                stats[self.colony_type]["tiles_discovered"].add((nx, ny))
 
     def terrain_weight(self, x, y):
         h = self.height_matrix[x, y]
@@ -197,7 +208,7 @@ class Ant:
         elif h < 0.7: return 6  # mountain
         else: return 10         # snow
 
-    def move(self, foods):
+    def move(self, foods, frame):
         if self.wait_ticks > 0:
             self.wait_ticks -= 1
             return None
@@ -210,7 +221,11 @@ class Ant:
 
             if self.current_path:
                 self.pos_x, self.pos_y = self.current_path.pop(0)
-                self.wait_ticks = self.terrain_weight(self.pos_x, self.pos_y) - 1
+
+                terrain_cost = self.terrain_weight(self.pos_x, self.pos_y)
+
+                self.wait_ticks = terrain_cost - 1
+                self.total_path_cost += terrain_cost
 
             if (self.pos_x, self.pos_y) == self.nest_pos:
                 self.carrying_food = False
@@ -235,8 +250,13 @@ class Ant:
         if self.current_path:
             self.pos_x, self.pos_y = self.current_path.pop(0)
             self.wait_ticks = self.terrain_weight(self.pos_x, self.pos_y) - 1
+            terrain_cost = self.terrain_weight(self.pos_x, self.pos_y)
+
+            self.wait_ticks = terrain_cost - 1
+            self.total_path_cost += terrain_cost
             
             self.visited.add((self.pos_x, self.pos_y))
+            stats[self.colony_type]["moves"] += 1
             self.discovered.discard((self.pos_x, self.pos_y))
             self._discover_neighbors(self.pos_x, self.pos_y)
 
@@ -245,6 +265,7 @@ class Ant:
             if food.pos_x == self.pos_x and food.pos_y == self.pos_y:
                 foods.pop(i)
                 self.carrying_food = True
+                self.food_pickup_time = frame
                 self.current_path = []
                 break
     
@@ -416,7 +437,9 @@ class AStarStrategy(PathfindingStrategy):
 
 # ---------------- MAIN ----------------
 
-color_matrix, height_matrix = WorldGen(50, 50, random.randint(0,10000))
+color_matrix, height_matrix = WorldGen(MAP_SIZE, MAP_SIZE, random.randint(0,10000))
+
+walkable_tiles = np.sum(height_matrix > 0)
 
 nests = []
 
@@ -447,13 +470,45 @@ food_collected = {
     "ASTAR": 0
 }
 
+stats = {
+    "BFS": {
+        "food_delivered": 0,
+        "tiles_discovered": set(),
+        "return_times": [],
+        "deaths": 0,
+        "kills": 0,
+        "path_costs": [],
+        "moves": 0
+    },
+
+    "DFS": {
+        "food_delivered": 0,
+        "tiles_discovered": set(),
+        "return_times": [],
+        "deaths": 0,
+        "kills": 0,
+        "path_costs": [],
+        "moves": 0
+    },
+
+    "ASTAR": {
+        "food_delivered": 0,
+        "tiles_discovered": set(),
+        "return_times": [],
+        "deaths": 0,
+        "kills": 0,
+        "path_costs": [],
+        "moves": 0
+    }
+}
+
 spawn_threshold = {
     "BFS": 10,
     "DFS": 10,
     "ASTAR": 10
 }
 
-for _ in range(100):
+for _ in range(FOOD_QUANTITY):
     while True:
         x = random.randint(0, len(height_matrix)-1)
         y = random.randint(0, len(height_matrix[0])-1)
@@ -469,7 +524,9 @@ ants.append(Ant(height_matrix, astar_nest, "ASTAR"))
 
 # ---------------- PLOT ----------------
 
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(12, 8))
+plt.subplots_adjust(right=0.72)
+
 ax.imshow(color_matrix)
 bfs_text = ax.text(
     bfs_nest[1], bfs_nest[0],
@@ -496,6 +553,28 @@ food_scatter = ax.scatter(
 )
 
 ant_plot = ax.scatter([], [], s=30, marker='s')
+bfs_stats_text = fig.text(
+    0.75, 0.75,
+    "",
+    fontsize=9,
+    va='top',
+    bbox=dict(facecolor='orange', alpha=0.25)
+)
+dfs_stats_text = fig.text(
+    0.75, 0.55,
+    "",
+    fontsize=9,
+    va='top',
+    bbox=dict(facecolor='blue', alpha=0.2)
+)
+astar_stats_text = fig.text(
+    0.75, 0.35,
+    "",
+    fontsize=9,
+    va='top',
+    bbox=dict(facecolor='green', alpha=0.2)
+)
+
 ax.axis('off')
 
 # ---------------- UPDATE ----------------
@@ -505,8 +584,21 @@ def update(frame):
     global spawn_threshold
 
     for ant in ants:
-        result = ant.move(foods)
+        result = ant.move(foods, frame)
         if result == "DELIVERED":
+
+            colony = ant.colony_type
+
+            stats[colony]["food_delivered"] += 1
+
+            if ant.food_pickup_time is not None:
+                return_time = frame - ant.food_pickup_time
+                stats[colony]["return_times"].append(return_time)
+
+            stats[colony]["path_costs"].append(ant.total_path_cost)
+
+            ant.total_path_cost = 0
+            ant.food_pickup_time = None
 
             colony = ant.colony_type
             food_collected[colony] += 1
@@ -563,6 +655,42 @@ def update(frame):
     bfs_text.set_text(str(food_collected["BFS"]))
     dfs_text.set_text(str(food_collected["DFS"]))
     astar_text.set_text(str(food_collected["ASTAR"]))
+
+    def colony_report(colony):
+
+        s = stats[colony]
+
+        avg_return = (
+            sum(s["return_times"]) / len(s["return_times"])
+            if s["return_times"] else 0
+        )
+
+        avg_cost = (
+            sum(s["path_costs"]) / len(s["path_costs"])
+            if s["path_costs"] else 0
+        )
+
+        coverage = (
+            len(s["tiles_discovered"]) / walkable_tiles * 100
+        )
+
+        efficiency = 1 / avg_cost if avg_cost > 0 else 0
+
+        return (
+            f"{colony}\n"
+            f"Food: {s['food_delivered']}\n"
+            f"Tiles: {len(s['tiles_discovered'])}\n"
+            f"Avg return: {avg_return:.1f}\n"
+            f"Deaths: {s['deaths']}\n"
+            f"Kills: {s['kills']}\n"
+            f"Avg cost: {avg_cost:.1f}\n"
+            f"Efficiency: {efficiency:.2f}\n"
+            f"Coverage: {coverage:.1f}%"
+        )
+
+    bfs_stats_text.set_text(colony_report("BFS"))
+    dfs_stats_text.set_text(colony_report("DFS"))
+    astar_stats_text.set_text(colony_report("ASTAR"))
 
     return ant_plot, food_scatter
 
