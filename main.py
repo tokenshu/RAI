@@ -18,6 +18,7 @@ ANIM_SPEED = 1
 ANT_HP = 6
 ANT_ATTACK = 2
 COMBAT_COOLDOWN = 15
+VISION_RAD = 10
 
 STARTING_ANTS = 3        # počet mravcov v každej kolónii na začiatku
 SPAWN_AMOUNT = 4         # koľko mravcov sa vytvorí po dosiahnutí prahu
@@ -28,19 +29,22 @@ GRASS_COST = 1
 MOUNTAIN_COST = 6
 SNOW_COST = 10
 
-SHARE_MEMORY = False
+SHARE_MEMORY = True
 colony_memory = {
     "BFS": {
         "visited": set(),
-        "discovered": set()
+        "discovered": set(),
+        "targeted": set()  # PRIDANÉ
     },
     "DFS": {
         "visited": set(),
-        "discovered": set()
+        "discovered": set(),
+        "targeted": set()  # PRIDANÉ
     },
     "ASTAR": {
         "visited": set(),
-        "discovered": set()
+        "discovered": set(),
+        "targeted": set()  # PRIDANÉ
     }
 }
 
@@ -224,8 +228,6 @@ def draw_hp_texts(ax, ants):
             fontweight="bold"
         )
         hp_texts.append(txt)
-
-
 # ---------------- ANT ----------------
 
 class Food:
@@ -243,6 +245,7 @@ class Ant:
 
         self.hp = ANT_HP
         self.attack = ANT_ATTACK
+        self.vision_radius = VISION_RAD
         self.combat_lock = 0
         self.ant_id = random.randint(1, 999)
         self.wait_ticks = 0
@@ -251,12 +254,14 @@ class Ant:
 
             self.visited = colony_memory[self.colony_type]["visited"]
             self.discovered = colony_memory[self.colony_type]["discovered"]
-
+            self.targeted = colony_memory[self.colony_type]["targeted"]  # PRIDANÉ
         else:
 
             self.visited = set()
             self.discovered = set()
+            self.targeted = set()  # PRIDANÉ
 
+        self.targeted_tile = None  # PRIDANÉ: Ktoré políčko má zarezervované tento konkrétny mravec
         self.visited.add((self.pos_x, self.pos_y))
         self._discover_neighbors(self.pos_x, self.pos_y)
 
@@ -267,10 +272,7 @@ class Ant:
             for dy in [-1, 0, 1]:
                 tile = (nest_pos[0] + dx, nest_pos[1] + dy)
 
-                if SHARE_MEMORY:
-                    colony_memory[self.colony_type]["visited"].add(tile)
-                else:
-                    self.visited.add(tile)
+                self.visited.add(tile)
         
         self.current_path = []
 
@@ -303,11 +305,15 @@ class Ant:
         else: return SNOW_COST        # snow
 
     def move(self, foods, frame):
+
+        if self.hp <= 0:
+            return None
+
         if self.wait_ticks > 0:
             self.wait_ticks -= 1
             return None
-
-        # --- Logika pohybu s jedlom ---
+        
+        #1 Home mode
         if self.carrying_food:
             if not self.current_path:
                 # Volanie strategie pre navrat domov
@@ -320,6 +326,7 @@ class Ant:
 
                 self.wait_ticks = terrain_cost - 1
                 self.total_path_cost += terrain_cost
+                stats[self.colony_type]["moves"] += 1
 
             if (self.pos_x, self.pos_y) == self.nest_pos:
                 self.carrying_food = False
@@ -327,23 +334,47 @@ class Ant:
                 return "DELIVERED"
             return None
 
-        # --- Logika hladania jedla (prieskum) ---
+        # 2. FOOD MODE
+        visible_food = self.get_visible_food(foods)
+
+        if visible_food and not self.carrying_food and not self.current_path:
+            # Nájdeme najbližšie viditeľné jedlo
+            target = min(
+                visible_food,
+                key=lambda f: abs(f.pos_x - self.pos_x) + abs(f.pos_y - self.pos_y)
+            )
+            
+            # Naplánujeme cestu k nemu
+            path_to_food = self.strategy.find_path_to_food(self, target)
+            
+            if path_to_food:
+                if self.targeted_tile:
+                    self.targeted.discard(self.targeted_tile)
+                    self.targeted_tile = None
+                self.current_path = path_to_food
+
+        # --- Logika prieskumu (spustí sa iba ak mravec nemá žiadnu cestu) ---
         if not self.current_path:
+            if self.targeted_tile:
+                self.targeted.discard(self.targeted_tile)
+                self.targeted_tile = None
+
             if not self.discovered:
                 return
 
-            # Volanie strategie pre najblizsie nepreskumane policko
             path_to_target = self.strategy.find_path_to_unvisited(self)
             
             if path_to_target:
                 self.current_path = path_to_target
+                self.targeted_tile = path_to_target[-1]
+                self.targeted.add(self.targeted_tile)
             else:
-                self.discovered.clear()
+                self.current_path = []
                 return
 
+        # --- Samotný presun (spoločný pre prieskum aj jedlo) ---
         if self.current_path:
             self.pos_x, self.pos_y = self.current_path.pop(0)
-            #self.wait_ticks = self.terrain_weight(self.pos_x, self.pos_y) - 1 #redundantný riadok
             terrain_cost = self.terrain_weight(self.pos_x, self.pos_y)
 
             self.wait_ticks = terrain_cost - 1
@@ -352,17 +383,35 @@ class Ant:
             self.visited.add((self.pos_x, self.pos_y))
             stats[self.colony_type]["moves"] += 1
             self.discovered.discard((self.pos_x, self.pos_y))
+            
+            if (self.pos_x, self.pos_y) == self.targeted_tile:
+                self.targeted.discard(self.targeted_tile)
+                self.targeted_tile = None
+
             self._discover_neighbors(self.pos_x, self.pos_y)
 
-        # Kontrola jedla
+        # Kontrola, či mravec stúpil na jedlo
         for i, food in enumerate(foods):
             if food.pos_x == self.pos_x and food.pos_y == self.pos_y:
                 foods.pop(i)
                 self.carrying_food = True
                 self.food_pickup_time = frame
                 self.current_path = []
+                if self.targeted_tile:
+                    self.targeted.discard(self.targeted_tile)
+                    self.targeted_tile = None
                 break
-    
+            
+    def get_visible_food(self, foods):
+        visible = []
+
+        for food in foods:
+            dist = abs(food.pos_x - self.pos_x) + abs(food.pos_y - self.pos_y)
+            if dist <= self.vision_radius:
+                visible.append(food)
+
+        return visible
+ 
 # ---------------- PATHFINDING STRATEGIES ----------------
 
 class PathfindingStrategy:
@@ -372,36 +421,68 @@ class PathfindingStrategy:
 
     def find_path_home(self, ant):
         raise NotImplementedError
+    def find_path_to_food(self, ant, food):
+        raise NotImplementedError
 
 
 class BfsStrategy(PathfindingStrategy):
     """Tvoj povodny, plne funkcny BFS algoritmus"""
     def find_path_to_unvisited(self, ant):
-        start = (ant.pos_x, ant.pos_y)
-        queue = deque([start])
-        parent = {}
-        visited_in_bfs = {start}
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        
-        while queue:
-            curr = queue.popleft()
-            if curr in ant.discovered:
-                path = []
-                while curr != start:
-                    path.append(curr)
-                    curr = parent[curr]
-                path.reverse()
-                return path
-                
-            for dx, dy in directions:
-                nx, ny = curr[0] + dx, curr[1] + dy
-                neighbor = (nx, ny)
-                if neighbor not in visited_in_bfs:
-                    if neighbor in ant.visited or neighbor in ant.discovered:
+            start = (ant.pos_x, ant.pos_y)
+            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+            
+            # --- 1. PRIECHOD: Prioritne hľadáme NEZAREZERVOVANÉ políčko ---
+            queue = deque([start])
+            parent = {}
+            visited_in_bfs = {start}
+            
+            while queue:
+                curr = queue.popleft()
+                if curr in ant.discovered and curr not in ant.targeted:
+                    path = []
+                    while curr != start:
+                        path.append(curr)
+                        curr = parent[curr]
+                    path.reverse()
+                    return path
+                    
+                for dx, dy in directions:
+                    nx, ny = curr[0] + dx, curr[1] + dy
+                    neighbor = (nx, ny)
+                    if (
+                    0 <= nx < len(ant.height_matrix) 
+                    and 0 <= ny < len(ant.height_matrix[0])
+                    and neighbor not in visited_in_bfs
+                    and ant.height_matrix[nx, ny] > 0
+                    ):
                         visited_in_bfs.add(neighbor)
                         parent[neighbor] = curr
                         queue.append(neighbor)
-        return []
+                            
+            # --- 2. PRIECHOD (Fallback): Ak sú už všetky zarezervované, vezme prvé dostupné ---
+            queue = deque([start])
+            parent = {}
+            visited_in_bfs = {start}
+            
+            while queue:
+                curr = queue.popleft()
+                if curr in ant.discovered:
+                    path = []
+                    while curr != start:
+                        path.append(curr)
+                        curr = parent[curr]
+                    path.reverse()
+                    return path
+                    
+                for dx, dy in directions:
+                    nx, ny = curr[0] + dx, curr[1] + dy
+                    neighbor = (nx, ny)
+                    if neighbor not in visited_in_bfs:
+                        if neighbor in ant.visited or neighbor in ant.discovered:
+                            visited_in_bfs.add(neighbor)
+                            parent[neighbor] = curr
+                            queue.append(neighbor)
+            return []
 
     def find_path_home(self, ant):
         start = (ant.pos_x, ant.pos_y)
@@ -429,7 +510,42 @@ class BfsStrategy(PathfindingStrategy):
                     parent[neighbor] = curr
                     queue.append(neighbor)
         return []
+    def find_path_to_food(self, ant, food):
+        start = (ant.pos_x, ant.pos_y)
+        goal = (food.pos_x, food.pos_y)
 
+        queue = deque([start])
+        parent = {}
+        visited_in_bfs = {start}
+
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
+
+        while queue:
+            curr = queue.popleft()
+
+            if curr == goal:
+                path = []
+
+                while curr != start:
+                    path.append(curr)
+                    curr = parent[curr]
+
+                path.reverse()
+                return path
+
+            for dx, dy in directions:
+                nx, ny = curr[0] + dx, curr[1] + dy
+                neighbor = (nx, ny)
+
+                if (
+                    neighbor not in visited_in_bfs
+                    and (neighbor in ant.visited or neighbor in ant.discovered)
+                ):
+                    visited_in_bfs.add(neighbor)
+                    parent[neighbor] = curr
+                    queue.append(neighbor)
+
+        return []
 
 class DfsStrategy(PathfindingStrategy):
     """MIESTO PRE KAMARATA 1 (DFS)"""
@@ -442,7 +558,8 @@ class DfsStrategy(PathfindingStrategy):
     def find_path_home(self, ant):
         # TODO: Sem napisat cisty DFS algoritmus pre cestu domov (ant.nest_pos).
         return []
-
+    def find_path_to_food(self, ant, food):
+        return BfsStrategy().find_path_to_food(ant, food)
 
 class AStarStrategy(PathfindingStrategy):
     """MIESTO PRE KAMARATA 2 (A*) - ZABUDOVANÉ"""
@@ -452,20 +569,48 @@ class AStarStrategy(PathfindingStrategy):
 
     def find_path_to_unvisited(self, ant):
         start = (ant.pos_x, ant.pos_y)
+        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         
-        # Prvky vo fronte: (f_score, g_score, aktualna_pozicia)
-        # Na zaciatku prieskumu nie je jeden fixny ciel, heuristika je 0 (Dijkstra)
+        # --- 1. PRIECHOD: Prioritne hľadáme NEZAREZERVOVANÉ najlacnejšie políčko ---
         queue = [(0, 0, start)]
         heapq.heapify(queue)
-        
         parent = {}
         g_score = {start: 0}
-        directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
         
         while queue:
             _, current_g, curr = heapq.heappop(queue)
-            
-            # Nasli sme najblizsi a najlacnejsi nepreskumany bod
+            if curr in ant.discovered and curr not in ant.targeted:
+                path = []
+                while curr != start:
+                    path.append(curr)
+                    curr = parent[curr]
+                path.reverse()
+                return path
+                
+            for dx, dy in directions:
+                nx, ny = curr[0] + dx, curr[1] + dy
+                neighbor = (nx, ny)
+                if (
+                    0 <= nx < len(ant.height_matrix)
+                    and 0 <= ny < len(ant.height_matrix[0])
+                    and ant.height_matrix[nx, ny] > 0
+                ):
+                    weight = ant.terrain_weight(nx, ny)
+                    tentative_g = current_g + weight
+                    
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        parent[neighbor] = curr
+                        heapq.heappush(queue, (tentative_g, tentative_g, neighbor))
+                        
+        # --- 2. PRIECHOD (Fallback): Ak sú všetky zarezervované, vezme prvé dostupné ---
+        queue = [(0, 0, start)]
+        heapq.heapify(queue)
+        parent = {}
+        g_score = {start: 0}
+        
+        while queue:
+            _, current_g, curr = heapq.heappop(queue)
             if curr in ant.discovered:
                 path = []
                 while curr != start:
@@ -477,8 +622,6 @@ class AStarStrategy(PathfindingStrategy):
             for dx, dy in directions:
                 nx, ny = curr[0] + dx, curr[1] + dy
                 neighbor = (nx, ny)
-                
-                # Moze prejst len cez to, co uz pozna alebo prave vidi
                 if neighbor in ant.visited or neighbor in ant.discovered:
                     weight = ant.terrain_weight(nx, ny)
                     tentative_g = current_g + weight
@@ -486,8 +629,7 @@ class AStarStrategy(PathfindingStrategy):
                     if neighbor not in g_score or tentative_g < g_score[neighbor]:
                         g_score[neighbor] = tentative_g
                         parent[neighbor] = curr
-                        f_score = tentative_g  # h=0, kedze ciele sa dynamicky menia
-                        heapq.heappush(queue, (f_score, tentative_g, neighbor))
+                        heapq.heappush(queue, (tentative_g, tentative_g, neighbor))
         return []
 
     def find_path_home(self, ant):
@@ -528,7 +670,44 @@ class AStarStrategy(PathfindingStrategy):
                         f_score = tentative_g + self._heuristic(neighbor, goal)
                         heapq.heappush(queue, (f_score, tentative_g, neighbor))
         return []
+    def find_path_to_food(self, ant, food):
+        start = (ant.pos_x, ant.pos_y)
+        goal = (food.pos_x, food.pos_y)
 
+        queue = [(0, 0, start)]
+        heapq.heapify(queue)
+
+        parent = {}
+        g_score = {start: 0}
+
+        directions = [(-1,0),(1,0),(0,-1),(0,1)]
+
+        while queue:
+            _, current_g, curr = heapq.heappop(queue)
+
+            if curr == goal:
+                path = []
+                while curr != start:
+                    path.append(curr)
+                    curr = parent[curr]
+                path.reverse()
+                return path
+
+            for dx, dy in directions:
+                nx, ny = curr[0]+dx, curr[1]+dy
+                neighbor = (nx, ny)
+
+                if neighbor in ant.visited or neighbor in ant.discovered:
+                    weight = ant.terrain_weight(nx, ny)
+                    tentative_g = current_g + weight
+
+                    if neighbor not in g_score or tentative_g < g_score[neighbor]:
+                        g_score[neighbor] = tentative_g
+                        parent[neighbor] = curr
+                        f = tentative_g + self._heuristic(neighbor, goal)
+                        heapq.heappush(queue, (f, tentative_g, neighbor))
+
+        return []
 # ---------------- MAIN ----------------
 
 color_matrix, height_matrix = WorldGen(MAP_SIZE, MAP_SIZE, random.randint(0,10000))
@@ -726,6 +905,12 @@ def update(frame):
         if ant.combat_lock > 0:
             ant.combat_lock -= 1
 
+    # PRIDANÉ: Ak mravec padol v boji, vymažeme jeho rezerváciu, aby políčko nezostalo navždy blokované
+    for ant in ants:
+        if ant.hp <= 0 and ant.targeted_tile:
+            ant.targeted.discard(ant.targeted_tile)
+            ant.targeted_tile = None
+    
     # 4. CRITICAL: Odstránenie mŕtvych mravcov z poľa PRED RENDEROM!
     ants[:] = [ant for ant in ants if ant.hp > 0]
     # Render
